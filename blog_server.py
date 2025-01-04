@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Store emails in memory (recent 100 emails)
 emails_cache = deque(maxlen=100)
 
+
 class EmailBlogServer:
     def __init__(self, imap_server, email_addr, password, host='0.0.0.0', port=8080):
         self.imap_server = imap_server
@@ -46,7 +47,8 @@ class EmailBlogServer:
         for sig in (signal.SIGTERM, signal.SIGINT):
             asyncio.get_event_loop().add_signal_handler(
                 sig,
-                lambda s=sig: asyncio.create_task(shutdown(s, asyncio.get_event_loop()))
+                lambda s=sig: asyncio.create_task(
+                    shutdown(s, asyncio.get_event_loop()))
             )
 
     async def connect_imap(self):
@@ -54,18 +56,38 @@ class EmailBlogServer:
         try:
             # Create SSL context with secure defaults
             ssl_context = ssl.create_default_context()
-            
+
+            logger.info(f"Creating IMAP client for {self.imap_server}")
             self.imap_client = aioimaplib.IMAP4_SSL(
                 host=self.imap_server,
                 ssl_context=ssl_context
             )
-            await self.imap_client.wait_hello_from_server()
-            await self.imap_client.login(self.email_addr, self.password)
-            await self.imap_client.select('INBOX')
+
+            logger.info("Waiting for server hello...")
+            try:
+                await self.imap_client.wait_hello_from_server()
+            except Exception as e:
+                logger.error(f"Failed at hello: {str(e)}", exc_info=True)
+                raise
+
+            logger.info("Attempting login...")
+            try:
+                await self.imap_client.login(self.email_addr, self.password)
+            except Exception as e:
+                logger.error(f"Failed at login: {str(e)}", exc_info=True)
+                raise
+
+            logger.info("Selecting INBOX...")
+            try:
+                await self.imap_client.select('INBOX')
+            except Exception as e:
+                logger.error(f"Failed at select: {str(e)}", exc_info=True)
+                raise
+
             logger.info("Successfully connected to IMAP server")
             return True
         except Exception as e:
-            logger.error(f"Failed to connect to IMAP: {str(e)}")
+            logger.error(f"Failed to connect to IMAP: {str(e)}", exc_info=True)
             return False
 
     @staticmethod
@@ -78,7 +100,8 @@ class EmailBlogServer:
         for content, charset in decoded_header:
             if isinstance(content, bytes):
                 try:
-                    parts.append(content.decode(charset or 'utf-8', errors='replace'))
+                    parts.append(content.decode(
+                        charset or 'utf-8', errors='replace'))
                 except:
                     parts.append(content.decode('utf-8', errors='replace'))
             else:
@@ -93,7 +116,8 @@ class EmailBlogServer:
             for part in msg.walk():
                 if part.get_content_type() == "text/plain":
                     try:
-                        content += part.get_payload(decode=True).decode(errors='replace')
+                        content += part.get_payload(
+                            decode=True).decode(errors='replace')
                     except:
                         continue
         else:
@@ -109,13 +133,13 @@ class EmailBlogServer:
         if response.result == 'OK':
             email_data = response.lines[1]
             msg = email.message_from_bytes(email_data)
-            
+
             # Safely extract and encode email details
             subject = self.safe_decode(msg['subject'])
             from_addr = self.safe_decode(msg['from'])
             date = self.safe_decode(msg['date'])
             content = self.get_email_content(msg)
-            
+
             return {
                 'subject': subject,
                 'from': from_addr,
@@ -129,39 +153,72 @@ class EmailBlogServer:
         """Monitor inbox for new emails"""
         while True:
             try:
-                if not self.imap_client or not await self.connect_imap():
-                    await asyncio.sleep(30)  # Wait before retrying connection
-                    continue
+                # Create new connection
+                logger.info(f"Connecting to {self.imap_server} as {
+                            self.email_addr}")
+                self.imap_client = aioimaplib.IMAP4_SSL(host=self.imap_server)
+
+                logger.info("Waiting for server hello...")
+                await self.imap_client.wait_hello_from_server()
+
+                logger.info("Logging in...")
+                await self.imap_client.login(self.email_addr, self.password)
+
+                logger.info("Selecting INBOX...")
+                await self.imap_client.select('INBOX')
+
+                logger.info("Searching for emails...")
+                _, data = await self.imap_client.search('ALL')
+                email_ids = data[0].split()
+                logger.info(f"Found {len(email_ids)} emails")
+
+                # Fetch and cache emails
+                if email_ids:
+                    for email_id in email_ids[-100:]:  # Get last 100 emails
+                        logger.info(f"Fetching email {email_id.decode()}...")
+                        response = await self.imap_client.fetch(email_id.decode(), '(RFC822)')
+                        if response[0] == 'OK':
+                            email_data = await self.fetch_email(email_id.decode())
+                            if email_data:
+                                emails_cache.appendleft(email_data)
 
                 # Start IDLE mode
+                logger.info("Starting IDLE mode...")
                 idle = await self.imap_client.idle_start()
                 try:
                     while True:
+                        logger.info("Waiting for new emails...")
                         response = await self.imap_client.wait_server_push()
+
                         if response is None:
+                            logger.info(
+                                "IDLE connection closed, reconnecting...")
                             break
-                            
+
+                        logger.info(f"Received server push: {response}")
+
                         # Check for new messages
-                        if 'RECENT' in response or 'EXISTS' in response:
-                            # Temporary exit IDLE to fetch new messages
+                        if any(b'EXISTS' in line for line in response):
+                            logger.info("New email detected!")
                             await self.imap_client.idle_done()
-                            # Search for new messages
-                            search_resp = await self.imap_client.uid('search', None, 'ALL')
-                            uids = search_resp.lines[0].split()
-                            
+
                             # Fetch new messages
-                            for uid in uids[-5:]:  # Get last 5 messages
-                                email_data = await self.fetch_email(uid.decode())
+                            _, data = await self.imap_client.search('ALL')
+                            email_ids = data[0].split()
+                            # Get last 5 messages
+                            for email_id in email_ids[-5:]:
+                                email_data = await self.fetch_email(email_id.decode())
                                 if email_data:
                                     emails_cache.appendleft(email_data)
-                            
-                            # Resume IDLE
+                                    logger.info(f"New email fetched: {
+                                                email_data['subject']}")
+
                             idle = await self.imap_client.idle_start()
-                            
+
                 except Exception as e:
                     logger.error(f"Error in IDLE loop: {str(e)}")
                     await asyncio.sleep(5)
-                    
+
             except Exception as e:
                 logger.error(f"Error in monitor_inbox: {str(e)}")
                 await asyncio.sleep(30)
@@ -210,7 +267,7 @@ class EmailBlogServer:
     </footer>
 </body>
 </html>'''
-        
+
         return html_content
 
     async def handle_blog(self, request):
@@ -240,10 +297,11 @@ class EmailBlogServer:
         await site.start()
         logger.info(f"Server started at http://{self.host}:{self.port}")
 
+
 def main():
     # Load environment variables from .env file
     load_dotenv()
-    
+
     # Get configuration from environment variables
     imap_server = os.getenv('IMAP_SERVER')
     email_addr = os.getenv('EMAIL')
@@ -252,13 +310,14 @@ def main():
     port = int(os.getenv('PORT', '8080'))
 
     if not all([imap_server, email_addr, password]):
-        logger.error("Please set IMAP_SERVER, EMAIL, and PASSWORD in your .env file")
+        logger.error(
+            "Please set IMAP_SERVER, EMAIL, and PASSWORD in your .env file")
         exit(1)
 
     # Create and start the server
     server = EmailBlogServer(imap_server, email_addr, password, host, port)
     loop = asyncio.get_event_loop()
-    
+
     try:
         loop.run_until_complete(server.start())
         loop.run_forever()
@@ -266,6 +325,7 @@ def main():
         logger.info("Shutting down server...")
     finally:
         loop.close()
+
 
 if __name__ == "__main__":
     main()
