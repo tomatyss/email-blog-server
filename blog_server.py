@@ -176,7 +176,7 @@ class EmailBlogServer:
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <meta http-equiv="X-Frame-Options" content="DENY">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
-    <title>My Log Email</title>
+    <title>Live Email Blog</title>
     <style>
         body {{ font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; margin: 0; padding: 20px; max-width: 800px; margin: 0 auto; }}
         article {{ margin-bottom: 2em; border-bottom: 1px solid #eee; padding-bottom: 1em; }}
@@ -185,7 +185,7 @@ class EmailBlogServer:
 </head>
 <body>
     <header>
-        <h1>My Log Email</h1>
+        <h1>Live Email Blog</h1>
         <p>Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
     </header>
     <main>'''
