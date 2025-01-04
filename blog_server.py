@@ -5,6 +5,7 @@ import html
 import email
 import logging
 import asyncio
+from pathlib import Path
 from dotenv import load_dotenv
 from email.header import decode_header
 from datetime import datetime
@@ -22,7 +23,7 @@ emails_cache = deque(maxlen=100)
 
 
 class EmailBlogServer:
-    def __init__(self, imap_server, email_addr, password, host='0.0.0.0', port=8080):
+    def __init__(self, imap_server, email_addr, password, host='0.0.0.0', port=8080, blog_title=None):
         self.imap_server = imap_server
         self.email_addr = email_addr
         self.password = password
@@ -32,24 +33,46 @@ class EmailBlogServer:
         self.app = web.Application()
         self.app.router.add_get('/', self.handle_blog)
         self.app.router.add_get('/health', self.handle_health)
+        self.blog_title = blog_title or 'Live Email Blog'
+        self.template_path = Path(__file__).parent / \
+            'templates' / 'blog_template.html'
         self.setup_signal_handlers()
 
     def setup_signal_handlers(self):
         """Setup graceful shutdown handlers"""
-        async def shutdown(signal, loop):
-            logger.info(f"Received exit signal {signal.name}...")
+        async def shutdown(sig):
+            logger.info(f"Received exit signal {sig.name}...")
+            tasks = [t for t in asyncio.all_tasks(
+            ) if t is not asyncio.current_task()]
+
+            # Cancel IMAP IDLE if active
             if self.imap_client and self.imap_client.has_pending_idle():
-                await self.imap_client.idle_done()
+                try:
+                    await self.imap_client.idle_done()
+                except Exception as e:
+                    logger.error(f"Error during IDLE cleanup: {e}")
+
+            # Cancel all running tasks
+            [task.cancel() for task in tasks]
+
+            logger.info(f"Cancelling {len(tasks)} outstanding tasks")
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Shutdown the web application
             await self.app.shutdown()
             await self.app.cleanup()
-            loop.stop()
 
+            # Stop the event loop
+            asyncio.get_event_loop().stop()
+
+        def handle_signal(sig):
+            loop = asyncio.get_running_loop()
+            loop.create_task(shutdown(sig))
+
+        # Register signal handlers
         for sig in (signal.SIGTERM, signal.SIGINT):
-            asyncio.get_event_loop().add_signal_handler(
-                sig,
-                lambda s=sig: asyncio.create_task(
-                    shutdown(s, asyncio.get_event_loop()))
-            )
+            asyncio.get_running_loop().add_signal_handler(
+                sig, lambda s=sig: handle_signal(s))
 
     async def connect_imap(self):
         """Establish secure IMAP connection"""
@@ -225,30 +248,10 @@ class EmailBlogServer:
 
     def generate_html(self):
         """Generate HTML blog content"""
-        html_content = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="X-Content-Type-Options" content="nosniff">
-    <meta http-equiv="X-Frame-Options" content="DENY">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
-    <title>Live Email Blog</title>
-    <style>
-        body {{ font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; margin: 0; padding: 20px; max-width: 800px; margin: 0 auto; }}
-        article {{ margin-bottom: 2em; border-bottom: 1px solid #eee; padding-bottom: 1em; }}
-        .meta {{ color: #666; font-size: 0.9em; }}
-    </style>
-</head>
-<body>
-    <header>
-        <h1>Live Email Blog</h1>
-        <p>Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-    </header>
-    <main>'''
-
+        # Generate email content HTML
+        email_content = ''
         for email_data in emails_cache:
-            html_content += f'''
+            email_content += f'''
         <article>
             <h2>{html.escape(email_data['subject'])}</h2>
             <div class="meta">
@@ -260,13 +263,19 @@ class EmailBlogServer:
             </div>
         </article>'''
 
-        html_content += '''
-    </main>
-    <footer>
-        <p>Secure Email Blog - All content is properly sanitized and encoded</p>
-    </footer>
-</body>
-</html>'''
+        # Read template file
+        with open(self.template_path, 'r') as f:
+            template = f.read()
+
+        # Replace template variables manually to avoid conflicts with CSS
+        replacements = {
+            '{title}': html.escape(self.blog_title),
+            '{last_updated}': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            '{email_content}': email_content
+        }
+        html_content = template
+        for key, value in replacements.items():
+            html_content = html_content.replace(key, value)
 
         return html_content
 
@@ -298,7 +307,7 @@ class EmailBlogServer:
         logger.info(f"Server started at http://{self.host}:{self.port}")
 
 
-def main():
+async def main():
     # Load environment variables from .env file
     load_dotenv()
 
@@ -308,6 +317,7 @@ def main():
     password = os.getenv('PASSWORD')
     host = os.getenv('HOST', '0.0.0.0')
     port = int(os.getenv('PORT', '8080'))
+    blog_title = os.getenv('BLOG_TITLE')
 
     if not all([imap_server, email_addr, password]):
         logger.error(
@@ -315,17 +325,20 @@ def main():
         exit(1)
 
     # Create and start the server
-    server = EmailBlogServer(imap_server, email_addr, password, host, port)
-    loop = asyncio.get_event_loop()
+    server = EmailBlogServer(imap_server, email_addr,
+                             password, host, port, blog_title)
+    await server.start()
 
     try:
-        loop.run_until_complete(server.start())
-        loop.run_forever()
-    except KeyboardInterrupt:
-        logger.info("Shutting down server...")
-    finally:
-        loop.close()
+        # Keep the server running
+        while True:
+            await asyncio.sleep(3600)  # Sleep for an hour
+    except asyncio.CancelledError:
+        logger.info("Server shutdown initiated...")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
