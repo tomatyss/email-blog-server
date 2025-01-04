@@ -33,6 +33,7 @@ class EmailBlogServer:
         self.app = web.Application()
         self.app.router.add_get('/', self.handle_blog)
         self.app.router.add_get('/health', self.handle_health)
+        self.app.router.add_get('/email/{uid}', self.handle_single_email)
         self.blog_title = blog_title or 'Live Email Blog'
         self.template_path = Path(__file__).parent / \
             'templates' / 'blog_template.html'
@@ -246,14 +247,19 @@ class EmailBlogServer:
                 logger.error(f"Error in monitor_inbox: {str(e)}")
                 await asyncio.sleep(30)
 
-    def generate_html(self):
+    def generate_html(self, single_email=None):
         """Generate HTML blog content"""
         # Generate email content HTML
         email_content = ''
-        for email_data in emails_cache:
-            email_content += f'''
+        if single_email:
+            # Display single email
+            email_content = self.generate_email_html(single_email)
+        else:
+            # Display all emails with links
+            for email_data in emails_cache:
+                email_content += f'''
         <article>
-            <h2>{html.escape(email_data['subject'])}</h2>
+            <h2><a href="/email/{email_data['uid']}">{html.escape(email_data['subject'])}</a></h2>
             <div class="meta">
                 <p><strong>From:</strong> {html.escape(email_data['from'])}</p>
                 <p><strong>Date:</strong> {html.escape(email_data['date'])}</p>
@@ -279,6 +285,21 @@ class EmailBlogServer:
 
         return html_content
 
+    def generate_email_html(self, email_data):
+        """Generate HTML for a single email"""
+        return f'''
+        <article>
+            <h2>{html.escape(email_data['subject'])}</h2>
+            <div class="meta">
+                <p><strong>From:</strong> {html.escape(email_data['from'])}</p>
+                <p><strong>Date:</strong> {html.escape(email_data['date'])}</p>
+            </div>
+            <div class="content">
+                {html.escape(email_data['content']).replace(chr(10), '<br>')}
+            </div>
+            <p><a href="/">← Back to all emails</a></p>
+        </article>'''
+
     async def handle_blog(self, request):
         """Handle blog page requests"""
         return web.Response(
@@ -287,7 +308,25 @@ class EmailBlogServer:
             headers={
                 'X-Content-Type-Options': 'nosniff',
                 'X-Frame-Options': 'DENY',
-                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline';"
+                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';"
+            }
+        )
+
+    async def handle_single_email(self, request):
+        """Handle single email view requests"""
+        uid = request.match_info['uid']
+        email_data = next((email for email in emails_cache if str(email['uid']) == str(uid)), None)
+        
+        if not email_data:
+            raise web.HTTPNotFound(text="Email not found")
+            
+        return web.Response(
+            text=self.generate_html(single_email=email_data),
+            content_type='text/html',
+            headers={
+                'X-Content-Type-Options': 'nosniff',
+                'X-Frame-Options': 'DENY',
+                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';"
             }
         )
 
