@@ -5,6 +5,7 @@ import logging
 import asyncio
 from pathlib import Path
 from email.header import decode_header
+from email.utils import formatdate
 from datetime import datetime
 from aiohttp import web
 from aioimaplib import aioimaplib
@@ -31,6 +32,7 @@ class EmailBlogServer:
         self.app.router.add_get('/', self.handle_blog)
         self.app.router.add_get('/health', self.handle_health)
         self.app.router.add_get('/email/{uid}', self.handle_single_email)
+        self.app.router.add_get('/feed.xml', self.handle_rss)
         self.blog_title = blog_title or 'Live Email Blog'
         self.template_path = Path(__file__).parent / \
             'templates' / 'blog_template.html'
@@ -294,6 +296,36 @@ class EmailBlogServer:
             <p><a href="/">← Back to all emails</a></p>
         </article>'''
 
+    def generate_rss(self):
+        """Generate RSS feed content"""
+        items = []
+        base_url = f"http://{self.host}:{self.port}"
+        
+        for email_data in emails_cache:
+            item = f"""
+            <item>
+                <title>{html.escape(email_data['subject'])}</title>
+                <link>{base_url}/email/{email_data['uid']}</link>
+                <guid>{base_url}/email/{email_data['uid']}</guid>
+                <description>{html.escape(email_data['content'])}</description>
+                <author>{html.escape(email_data['from'])}</author>
+                <pubDate>{formatdate(float(datetime.strptime(email_data['date'], '%a, %d %b %Y %H:%M:%S %z').timestamp()))}</pubDate>
+            </item>"""
+            items.append(item)
+
+        rss = f"""<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+    <channel>
+        <title>{html.escape(self.blog_title)}</title>
+        <link>{base_url}</link>
+        <description>{self.blog_title}</description>
+        <language>en-us</language>
+        <lastBuildDate>{formatdate()}</lastBuildDate>
+        {''.join(items)}
+    </channel>
+</rss>"""
+        return rss
+
     async def handle_blog(self, request):
         """Handle blog page requests"""
         return web.Response(
@@ -321,6 +353,16 @@ class EmailBlogServer:
                 'X-Content-Type-Options': 'nosniff',
                 'X-Frame-Options': 'DENY',
                 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';"
+            }
+        )
+
+    async def handle_rss(self, request):
+        """Handle RSS feed requests"""
+        return web.Response(
+            text=self.generate_rss(),
+            content_type='application/rss+xml',
+            headers={
+                'X-Content-Type-Options': 'nosniff',
             }
         )
 
