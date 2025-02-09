@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Store emails in memory (recent 100 emails)
 emails_cache = deque(maxlen=100)
+# Track processed email UIDs to prevent duplicates
+processed_uids = set()
 
 
 class EmailBlogServer:
@@ -197,12 +199,15 @@ class EmailBlogServer:
                 # Fetch and cache emails
                 if email_ids:
                     for email_id in email_ids[-100:]:  # Get last 100 emails
-                        logger.info(f"Fetching email {email_id.decode()}...")
-                        response = await self.imap_client.fetch(email_id.decode(), '(RFC822)')
-                        if response[0] == 'OK':
-                            email_data = await self.fetch_email(email_id.decode())
-                            if email_data:
-                                emails_cache.appendleft(email_data)
+                        uid = email_id.decode()
+                        if uid not in processed_uids:  # Only process new emails
+                            logger.info(f"Fetching email {uid}...")
+                            response = await self.imap_client.fetch(uid, '(RFC822)')
+                            if response[0] == 'OK':
+                                email_data = await self.fetch_email(uid)
+                                if email_data:
+                                    emails_cache.appendleft(email_data)
+                                    processed_uids.add(uid)
 
                 # Start IDLE mode
                 logger.info("Starting IDLE mode...")
@@ -223,15 +228,18 @@ class EmailBlogServer:
                             logger.info("New email detected!")
                             await self.imap_client.idle_done()
 
-                            # Fetch new messages
+                            # Search for new messages only
                             _, data = await self.imap_client.search('ALL')
                             email_ids = data[0].split()
-                            # Get last 5 messages
-                            for email_id in email_ids[-5:]:
-                                email_data = await self.fetch_email(email_id.decode())
-                                if email_data:
-                                    emails_cache.appendleft(email_data)
-                                    logger.info(f"New email fetched: {email_data['subject']}")
+                            # Process only new emails
+                            for email_id in email_ids:
+                                uid = email_id.decode()
+                                if uid not in processed_uids:
+                                    email_data = await self.fetch_email(uid)
+                                    if email_data:
+                                        emails_cache.appendleft(email_data)
+                                        processed_uids.add(uid)
+                                        logger.info(f"New email fetched: {email_data['subject']}")
 
                             idle = await self.imap_client.idle_start()
 
