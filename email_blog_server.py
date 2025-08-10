@@ -1,16 +1,17 @@
-import ssl
-import html
-import email
-import logging
 import asyncio
-from pathlib import Path
+import email
+import html
+import logging
+import signal
+import ssl
+from collections import deque
+from datetime import UTC, datetime
 from email.header import decode_header
-from email.utils import formatdate
-from datetime import datetime
+from email.utils import formatdate, parsedate_to_datetime
+from pathlib import Path
+
 from aiohttp import web
 from aioimaplib import aioimaplib
-from collections import deque
-import signal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,29 +24,40 @@ processed_uids = set()
 
 
 class EmailBlogServer:
-    def __init__(self, imap_server, email_addr, password, host='0.0.0.0', port=8080, blog_title=None):
+    def __init__(
+        self,
+        imap_server,
+        email_addr,
+        password,
+        host="0.0.0.0",
+        port=8080,
+        blog_title=None,
+        public_url=None,
+        enable_imap: bool = True,
+    ):
         self.imap_server = imap_server
         self.email_addr = email_addr
         self.password = password
         self.host = host
         self.port = port
+        self.public_url = public_url
+        self.enable_imap = enable_imap
         self.imap_client = None
         self.app = web.Application()
-        self.app.router.add_get('/', self.handle_blog)
-        self.app.router.add_get('/health', self.handle_health)
-        self.app.router.add_get('/email/{uid}', self.handle_single_email)
-        self.app.router.add_get('/feed.xml', self.handle_rss)
-        self.blog_title = blog_title or 'Live Email Blog'
-        self.template_path = Path(__file__).parent / \
-            'templates' / 'blog_template.html'
+        self.app.router.add_get("/", self.handle_blog)
+        self.app.router.add_get("/health", self.handle_health)
+        self.app.router.add_get("/email/{uid}", self.handle_single_email)
+        self.app.router.add_get("/feed.xml", self.handle_rss)
+        self.blog_title = blog_title or "Live Email Blog"
+        self.template_path = Path(__file__).parent / "templates" / "blog_template.html"
         self.setup_signal_handlers()
 
     def setup_signal_handlers(self):
         """Setup graceful shutdown handlers"""
+
         async def shutdown(sig):
             logger.info(f"Received exit signal {sig.name}...")
-            tasks = [t for t in asyncio.all_tasks(
-            ) if t is not asyncio.current_task()]
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
 
             # Cancel IMAP IDLE if active
             if self.imap_client and self.imap_client.has_pending_idle():
@@ -73,8 +85,11 @@ class EmailBlogServer:
 
         # Register signal handlers
         for sig in (signal.SIGTERM, signal.SIGINT):
-            asyncio.get_running_loop().add_signal_handler(
-                sig, lambda s=sig: handle_signal(s))
+            try:
+                asyncio.get_running_loop().add_signal_handler(sig, lambda s=sig: handle_signal(s))
+            except (NotImplementedError, RuntimeError):
+                # Signal handlers may not be available (e.g., on Windows or if no running loop)
+                pass
 
     async def connect_imap(self):
         """Establish secure IMAP connection"""
@@ -83,10 +98,7 @@ class EmailBlogServer:
             ssl_context = ssl.create_default_context()
 
             logger.info(f"Creating IMAP client for {self.imap_server}")
-            self.imap_client = aioimaplib.IMAP4_SSL(
-                host=self.imap_server,
-                ssl_context=ssl_context
-            )
+            self.imap_client = aioimaplib.IMAP4_SSL(host=self.imap_server, ssl_context=ssl_context)
 
             logger.info("Waiting for server hello...")
             try:
@@ -104,7 +116,7 @@ class EmailBlogServer:
 
             logger.info("Selecting INBOX...")
             try:
-                await self.imap_client.select('INBOX')
+                await self.imap_client.select("INBOX")
             except Exception as e:
                 logger.error(f"Failed at select: {str(e)}", exc_info=True)
                 raise
@@ -119,19 +131,18 @@ class EmailBlogServer:
     def safe_decode(header):
         """Safely decode email headers"""
         if not header:
-            return ''
+            return ""
         decoded_header = decode_header(header)
         parts = []
         for content, charset in decoded_header:
             if isinstance(content, bytes):
                 try:
-                    parts.append(content.decode(
-                        charset or 'utf-8', errors='replace'))
-                except:
-                    parts.append(content.decode('utf-8', errors='replace'))
+                    parts.append(content.decode(charset or "utf-8", errors="replace"))
+                except Exception:
+                    parts.append(content.decode("utf-8", errors="replace"))
             else:
                 parts.append(str(content))
-        return ' '.join(parts)
+        return " ".join(parts)
 
     @staticmethod
     def get_email_content(msg):
@@ -141,36 +152,57 @@ class EmailBlogServer:
             for part in msg.walk():
                 if part.get_content_type() == "text/plain":
                     try:
-                        content += part.get_payload(
-                            decode=True).decode(errors='replace')
-                    except:
+                        content += part.get_payload(decode=True).decode(errors="replace")
+                    except Exception:
                         continue
         else:
             try:
-                content = msg.get_payload(decode=True).decode(errors='replace')
-            except:
+                content = msg.get_payload(decode=True).decode(errors="replace")
+            except Exception:
                 content = "Could not decode email content"
         return content
 
-    async def fetch_email(self, uid):
-        """Fetch and process a single email"""
-        response = await self.imap_client.uid('fetch', uid, '(RFC822)')
-        if response.result == 'OK':
-            email_data = response.lines[1]
-            msg = email.message_from_bytes(email_data)
+    async def fetch_email(self, msg_id):
+        """Fetch and process a single email by sequence ID."""
+        try:
+            status, data = await self.imap_client.fetch(msg_id, "(RFC822)")
+        except Exception as e:
+            logger.error(f"Fetch failed for {msg_id}: {e}")
+            return None
+
+        if status == "OK" and isinstance(data, list) and data:
+            # Try common data shapes from IMAP responses
+            msg_bytes = None
+            first = data[0]
+            if (
+                isinstance(first, tuple)
+                and len(first) > 1
+                and isinstance(first[1], bytes | bytearray)
+            ):
+                msg_bytes = first[1]
+            else:
+                # Sometimes payload is the second list element
+                if len(data) > 1 and isinstance(data[1], bytes | bytearray):
+                    msg_bytes = data[1]
+
+            if not msg_bytes:
+                logger.error(f"Unexpected FETCH response format for {msg_id}: {data}")
+                return None
+
+            msg = email.message_from_bytes(msg_bytes)
 
             # Safely extract and encode email details
-            subject = self.safe_decode(msg['subject'])
-            from_addr = self.safe_decode(msg['from'])
-            date = self.safe_decode(msg['date'])
+            subject = self.safe_decode(msg["subject"])
+            from_addr = self.safe_decode(msg["from"])
+            date = self.safe_decode(msg["date"])
             content = self.get_email_content(msg)
 
             return {
-                'subject': subject,
-                'from': from_addr,
-                'date': date,
-                'content': content,
-                'uid': uid
+                "subject": subject,
+                "from": from_addr,
+                "date": date,
+                "content": content,
+                "uid": msg_id,
             }
         return None
 
@@ -178,40 +210,34 @@ class EmailBlogServer:
         """Monitor inbox for new emails"""
         while True:
             try:
-                # Create new connection
+                # Create or re-create connection
                 logger.info(f"Connecting to {self.imap_server} as {self.email_addr}")
-                self.imap_client = aioimaplib.IMAP4_SSL(host=self.imap_server)
+                ok = await self.connect_imap()
+                if not ok:
+                    await asyncio.sleep(10)
+                    continue
 
-                logger.info("Waiting for server hello...")
-                await self.imap_client.wait_hello_from_server()
-
-                logger.info("Logging in...")
-                await self.imap_client.login(self.email_addr, self.password)
-
-                logger.info("Selecting INBOX...")
-                await self.imap_client.select('INBOX')
-
-                logger.info("Searching for emails...")
-                _, data = await self.imap_client.search('ALL')
-                email_ids = data[0].split()
+                logger.info("Searching for emails (sequence IDs)...")
+                status, data = await self.imap_client.search("ALL")
+                email_ids = []
+                if status == "OK" and data and isinstance(data[0], bytes | bytearray):
+                    email_ids = data[0].split()
                 logger.info(f"Found {len(email_ids)} emails")
 
                 # Fetch and cache emails
                 if email_ids:
                     for email_id in email_ids[-100:]:  # Get last 100 emails
-                        uid = email_id.decode()
-                        if uid not in processed_uids:  # Only process new emails
-                            logger.info(f"Fetching email {uid}...")
-                            response = await self.imap_client.fetch(uid, '(RFC822)')
-                            if response[0] == 'OK':
-                                email_data = await self.fetch_email(uid)
-                                if email_data:
-                                    emails_cache.appendleft(email_data)
-                                    processed_uids.add(uid)
+                        seq_id = email_id.decode()
+                        if seq_id not in processed_uids:  # Only process new emails
+                            logger.info(f"Fetching email {seq_id}...")
+                            email_data = await self.fetch_email(seq_id)
+                            if email_data:
+                                emails_cache.appendleft(email_data)
+                                processed_uids.add(seq_id)
 
                 # Start IDLE mode
                 logger.info("Starting IDLE mode...")
-                idle = await self.imap_client.idle_start()
+                await self.imap_client.idle_start()
                 try:
                     while True:
                         logger.info("Waiting for new emails...")
@@ -224,24 +250,26 @@ class EmailBlogServer:
                         logger.info(f"Received server push: {response}")
 
                         # Check for new messages
-                        if any(b'EXISTS' in line for line in response):
+                        if any(b"EXISTS" in line for line in response):
                             logger.info("New email detected!")
                             await self.imap_client.idle_done()
 
-                            # Search for new messages only
-                            _, data = await self.imap_client.search('ALL')
-                            email_ids = data[0].split()
+                            # Search for new messages only (simple diff)
+                            status, data = await self.imap_client.search("ALL")
+                            email_ids = []
+                            if status == "OK" and data and isinstance(data[0], bytes | bytearray):
+                                email_ids = data[0].split()
                             # Process only new emails
                             for email_id in email_ids:
-                                uid = email_id.decode()
-                                if uid not in processed_uids:
-                                    email_data = await self.fetch_email(uid)
+                                seq_id = email_id.decode()
+                                if seq_id not in processed_uids:
+                                    email_data = await self.fetch_email(seq_id)
                                     if email_data:
                                         emails_cache.appendleft(email_data)
-                                        processed_uids.add(uid)
+                                        processed_uids.add(seq_id)
                                         logger.info(f"New email fetched: {email_data['subject']}")
 
-                            idle = await self.imap_client.idle_start()
+                            await self.imap_client.idle_start()
 
                 except Exception as e:
                     logger.error(f"Error in IDLE loop: {str(e)}")
@@ -254,14 +282,14 @@ class EmailBlogServer:
     def generate_html(self, single_email=None):
         """Generate HTML blog content"""
         # Generate email content HTML
-        email_content = ''
+        email_content = ""
         if single_email:
             # Display single email
             email_content = self.generate_email_html(single_email)
         else:
             # Display all emails with links
             for email_data in emails_cache:
-                email_content += f'''
+                email_content += f"""
         <article>
             <h2><a href="/email/{email_data['uid']}">{html.escape(email_data['subject'])}</a></h2>
             <div class="meta">
@@ -271,17 +299,17 @@ class EmailBlogServer:
             <div class="content">
                 {html.escape(email_data['content']).replace(chr(10), '<br>')}
             </div>
-        </article>'''
+        </article>"""
 
         # Read template file
-        with open(self.template_path, 'r') as f:
+        with open(self.template_path) as f:
             template = f.read()
 
         # Replace template variables manually to avoid conflicts with CSS
         replacements = {
-            '{title}': html.escape(self.blog_title),
-            '{last_updated}': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            '{email_content}': email_content
+            "{title}": html.escape(self.blog_title),
+            "{last_updated}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "{email_content}": email_content,
         }
         html_content = template
         for key, value in replacements.items():
@@ -291,7 +319,7 @@ class EmailBlogServer:
 
     def generate_email_html(self, email_data):
         """Generate HTML for a single email"""
-        return f'''
+        return f"""
         <article>
             <h2>{html.escape(email_data['subject'])}</h2>
             <div class="meta">
@@ -302,14 +330,26 @@ class EmailBlogServer:
                 {html.escape(email_data['content']).replace(chr(10), '<br>')}
             </div>
             <p><a href="/">← Back to all emails</a></p>
-        </article>'''
+        </article>"""
 
     def generate_rss(self):
         """Generate RSS feed content"""
         items = []
-        base_url = f"http://{self.host}:{self.port}"
-        
+        base_url = (
+            self.public_url.rstrip("/") if self.public_url else f"http://{self.host}:{self.port}"
+        )
         for email_data in emails_cache:
+            # Parse date robustly
+            try:
+                dt = parsedate_to_datetime(email_data["date"])
+                if dt is None:
+                    raise ValueError("parsedate_to_datetime returned None")
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                pub_ts = float(dt.timestamp())
+            except Exception:
+                pub_ts = float(datetime.now(tz=UTC).timestamp())
+
             item = f"""
             <item>
                 <title>{html.escape(email_data['subject'])}</title>
@@ -317,7 +357,7 @@ class EmailBlogServer:
                 <guid>{base_url}/email/{email_data['uid']}</guid>
                 <description>{html.escape(email_data['content'])}</description>
                 <author>{html.escape(email_data['from'])}</author>
-                <pubDate>{formatdate(float(datetime.strptime(email_data['date'], '%a, %d %b %Y %H:%M:%S %z').timestamp()))}</pubDate>
+                <pubDate>{formatdate(pub_ts)}</pubDate>
             </item>"""
             items.append(item)
 
@@ -338,50 +378,51 @@ class EmailBlogServer:
         """Handle blog page requests"""
         return web.Response(
             text=self.generate_html(),
-            content_type='text/html',
+            content_type="text/html",
             headers={
-                'X-Content-Type-Options': 'nosniff',
-                'X-Frame-Options': 'DENY',
-                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';"
-            }
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';",
+            },
         )
 
     async def handle_single_email(self, request):
         """Handle single email view requests"""
-        uid = request.match_info['uid']
-        email_data = next((email for email in emails_cache if str(email['uid']) == str(uid)), None)
-        
+        uid = request.match_info["uid"]
+        email_data = next((email for email in emails_cache if str(email["uid"]) == str(uid)), None)
+
         if not email_data:
             raise web.HTTPNotFound(text="Email not found")
-            
+
         return web.Response(
             text=self.generate_html(single_email=email_data),
-            content_type='text/html',
+            content_type="text/html",
             headers={
-                'X-Content-Type-Options': 'nosniff',
-                'X-Frame-Options': 'DENY',
-                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';"
-            }
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';",
+            },
         )
 
     async def handle_rss(self, request):
         """Handle RSS feed requests"""
         return web.Response(
             text=self.generate_rss(),
-            content_type='application/rss+xml',
+            content_type="application/rss+xml",
             headers={
-                'X-Content-Type-Options': 'nosniff',
-            }
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     async def handle_health(self, request):
         """Handle health check requests"""
-        return web.Response(text='OK')
+        return web.Response(text="OK")
 
     async def start(self):
         """Start the server and email monitor"""
-        # Start email monitoring in background
-        asyncio.create_task(self.monitor_inbox())
+        # Start email monitoring in background (optional for tests)
+        if self.enable_imap:
+            asyncio.create_task(self.monitor_inbox())
         # Start web server
         runner = web.AppRunner(self.app)
         await runner.setup()

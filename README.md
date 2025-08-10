@@ -34,6 +34,9 @@ pip install -r requirements.txt
      # Optional settings
      PORT=8080
      HOST=0.0.0.0
+     # Base URL used in RSS feed links (useful behind reverse proxies)
+     # Example: https://blog.example.com
+     PUBLIC_URL=
      ```
 
 3. Run the server:
@@ -76,3 +79,15 @@ If using Gmail:
 ## Health Check
 
 The server provides a health check endpoint at `/health` that returns "OK" when the server is running properly.
+## Development
+
+- Run locally:
+  - `python blog_server.py`
+- Tests (unit tests focus on rendering and RSS; IMAP is disabled during tests):
+  - `python -m unittest discover -s tests -p 'test_*.py'`
+
+- Dev tooling:
+  - Install: `make install-dev`
+  - Lint: `make lint` (auto-fix: `make lint-fix`)
+  - Format: `make format` (check only: `make format-check`)
+  - All configs live in `pyproject.toml` (Black/Ruff)
