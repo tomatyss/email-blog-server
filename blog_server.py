@@ -1,6 +1,6 @@
-import os
-import logging
 import asyncio
+import logging
+import os
 from dotenv import load_dotenv
 from email_blog_server import EmailBlogServer
 
@@ -14,21 +14,28 @@ async def main():
     load_dotenv()
 
     # Get configuration from environment variables
-    imap_server = os.getenv('IMAP_SERVER')
-    email_addr = os.getenv('EMAIL')
-    password = os.getenv('PASSWORD')
-    host = os.getenv('HOST', '0.0.0.0')
-    port = int(os.getenv('PORT', '8080'))
-    blog_title = os.getenv('BLOG_TITLE')
+    imap_server = os.getenv("IMAP_SERVER")
+    email_addr = os.getenv("EMAIL")
+    password = os.getenv("PASSWORD")
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8080"))
+    blog_title = os.getenv("BLOG_TITLE")
+    public_url = os.getenv("PUBLIC_URL")
 
     if not all([imap_server, email_addr, password]):
-        logger.error(
-            "Please set IMAP_SERVER, EMAIL, and PASSWORD in your .env file")
+        logger.error("Please set IMAP_SERVER, EMAIL, and PASSWORD in your .env file")
         exit(1)
 
     # Create and start the server
-    server = EmailBlogServer(imap_server, email_addr,
-                             password, host, port, blog_title)
+    server = EmailBlogServer(
+        imap_server,
+        email_addr,
+        password,
+        host,
+        port,
+        blog_title,
+        public_url=public_url,
+    )
     await server.start()
 
     try:
