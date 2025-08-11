@@ -11,6 +11,7 @@ A secure server that turns your email inbox into a live blog. New emails automat
 - Content Security Policy implementation
 - Memory-efficient (stores last 100 emails)
 - Health check endpoint at /health
+ - Optional Markdown/HTML rendering (opt-in via env var)
 
 ## Installation
 
@@ -37,6 +38,13 @@ pip install -r requirements.txt
      # Base URL used in RSS feed links (useful behind reverse proxies)
      # Example: https://blog.example.com
      PUBLIC_URL=
+     
+     # Optional: Content rendering mode (defaults to plain)
+     # Options: plain | markdown | auto
+     # - plain: escape content and render newlines as <br>
+     # - markdown: convert plain/markdown to HTML; sanitize; sanitize HTML parts
+     # - auto: prefer sanitized text/html part; else markdown->HTML; else plain
+     RENDER_MODE=plain
      ```
 
 3. Run the server:
@@ -63,7 +71,8 @@ If using Gmail:
 - Content Security Policy (CSP) headers
 - X-Frame-Options to prevent clickjacking
 - X-Content-Type-Options to prevent MIME-type sniffing
-- All content is HTML-escaped to prevent XSS attacks
+- By default all content is HTML-escaped to prevent XSS attacks
+- When Markdown/HTML is enabled, content is sanitized (using bleach if installed)
 - No JavaScript used - pure server-side rendering
 - Memory-based caching (no file system access)
 
@@ -73,7 +82,7 @@ If using Gmail:
 2. It uses IMAP IDLE for real-time email notifications
 3. When new emails arrive, they're automatically fetched and cached
 4. The blog page shows the most recent 100 emails
-5. All email content is properly sanitized and encoded
+5. All email content is properly encoded (and sanitized when rendering HTML)
 6. The page auto-updates when you refresh
 
 ## Health Check

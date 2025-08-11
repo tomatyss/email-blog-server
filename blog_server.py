@@ -21,6 +21,7 @@ async def main():
     port = int(os.getenv("PORT", "8080"))
     blog_title = os.getenv("BLOG_TITLE")
     public_url = os.getenv("PUBLIC_URL")
+    render_mode = os.getenv("RENDER_MODE", "plain")
 
     if not all([imap_server, email_addr, password]):
         logger.error("Please set IMAP_SERVER, EMAIL, and PASSWORD in your .env file")
@@ -35,6 +36,7 @@ async def main():
         port,
         blog_title,
         public_url=public_url,
+        render_mode=render_mode,
     )
     await server.start()
 
