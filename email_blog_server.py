@@ -5,7 +5,7 @@ import logging
 import signal
 import ssl
 from collections import deque
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from email.header import decode_header
 from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
@@ -22,6 +22,21 @@ emails_cache = deque(maxlen=100)
 # Track processed email UIDs to prevent duplicates
 processed_uids = set()
 
+# Optional dependencies for Markdown rendering and HTML sanitization
+try:
+    import markdown as _markdown  # type: ignore
+    _MARKDOWN_AVAILABLE = True
+except Exception:  # optional dependency
+    _markdown = None
+    _MARKDOWN_AVAILABLE = False
+
+try:
+    import bleach  # type: ignore
+    _BLEACH_AVAILABLE = True
+except Exception:  # optional dependency
+    bleach = None
+    _BLEACH_AVAILABLE = False
+
 
 class EmailBlogServer:
     def __init__(
@@ -34,6 +49,7 @@ class EmailBlogServer:
         blog_title=None,
         public_url=None,
         enable_imap: bool = True,
+        render_mode: str = "plain",  # 'plain' | 'markdown' | 'auto'
     ):
         self.imap_server = imap_server
         self.email_addr = email_addr
@@ -42,6 +58,7 @@ class EmailBlogServer:
         self.port = port
         self.public_url = public_url
         self.enable_imap = enable_imap
+        self.render_mode = (render_mode or "plain").lower()
         self.imap_client = None
         self.app = web.Application()
         self.app.router.add_get("/", self.handle_blog)
@@ -146,21 +163,117 @@ class EmailBlogServer:
 
     @staticmethod
     def get_email_content(msg):
-        """Extract email content safely"""
-        content = ""
+        """Extract best available email content and its MIME type.
+
+        Preference: text/html -> text/markdown -> text/plain
+        Returns (content, content_type)
+        """
+        html_part = None
+        md_part = None
+        plain_part = None
+
+        def _decode(part):
+            try:
+                return part.get_payload(decode=True).decode(errors="replace")
+            except Exception:
+                return None
+
         if msg.is_multipart():
             for part in msg.walk():
-                if part.get_content_type() == "text/plain":
-                    try:
-                        content += part.get_payload(decode=True).decode(errors="replace")
-                    except Exception:
-                        continue
+                ctype = part.get_content_type()
+                if ctype == "text/html" and html_part is None:
+                    html_part = _decode(part)
+                elif ctype in ("text/markdown", "text/x-markdown") and md_part is None:
+                    md_part = _decode(part)
+                elif ctype == "text/plain" and plain_part is None:
+                    plain_part = _decode(part)
         else:
-            try:
-                content = msg.get_payload(decode=True).decode(errors="replace")
-            except Exception:
-                content = "Could not decode email content"
-        return content
+            ctype = msg.get_content_type() or "text/plain"
+            body = _decode(msg)
+            if ctype == "text/html":
+                html_part = body
+            elif ctype in ("text/markdown", "text/x-markdown"):
+                md_part = body
+            else:
+                plain_part = body
+
+        if html_part is not None:
+            return html_part, "text/html"
+        if md_part is not None:
+            return md_part, "text/markdown"
+        if plain_part is not None:
+            return plain_part, "text/plain"
+        return "Could not decode email content", "text/plain"
+
+    def render_content_to_html(self, content: str, content_type: str) -> str:
+        """Render content to safe HTML based on configured render_mode."""
+        ctype = (content_type or "text/plain").lower()
+        mode = self.render_mode
+
+        def _escape_plain(text: str) -> str:
+            return html.escape(text).replace(chr(10), "<br>")
+
+        def _sanitize(html_in: str) -> str:
+            if not _BLEACH_AVAILABLE:
+                return _escape_plain(html_in)
+            allowed_tags = [
+                "p",
+                "br",
+                "hr",
+                "pre",
+                "code",
+                "blockquote",
+                "ul",
+                "ol",
+                "li",
+                "strong",
+                "em",
+                "b",
+                "i",
+                "u",
+                "s",
+                "a",
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+            ]
+            allowed_attrs = {"a": ["href", "title", "rel"]}
+            cleaned = bleach.clean(
+                html_in,
+                tags=allowed_tags,
+                attributes=allowed_attrs,
+                protocols=["http", "https", "mailto"],
+                strip=True,
+            )
+            return bleach.linkify(cleaned) if _BLEACH_AVAILABLE else cleaned
+
+        def _md_to_html(text: str) -> str:
+            if not _MARKDOWN_AVAILABLE:
+                return _escape_plain(text)
+            html_out = _markdown.markdown(
+                text,
+                extensions=["extra", "sane_lists", "nl2br", "codehilite"],
+                output_format="xhtml1",
+            )
+            return _sanitize(html_out)
+
+        if mode == "plain":
+            return _escape_plain(content)
+
+        if mode == "markdown":
+            if ctype == "text/html":
+                return _sanitize(content)
+            return _md_to_html(content)
+
+        # auto (or unknown) mode
+        if ctype == "text/html":
+            return _sanitize(content)
+        if ctype in ("text/markdown", "text/x-markdown"):
+            return _md_to_html(content)
+        return _escape_plain(content)
 
     async def fetch_email(self, msg_id):
         """Fetch and process a single email by sequence ID."""
@@ -195,13 +308,14 @@ class EmailBlogServer:
             subject = self.safe_decode(msg["subject"])
             from_addr = self.safe_decode(msg["from"])
             date = self.safe_decode(msg["date"])
-            content = self.get_email_content(msg)
+            content, content_type = self.get_email_content(msg)
 
             return {
                 "subject": subject,
                 "from": from_addr,
                 "date": date,
                 "content": content,
+                "content_type": content_type,
                 "uid": msg_id,
             }
         return None
@@ -297,7 +411,7 @@ class EmailBlogServer:
                 <p><strong>Date:</strong> {html.escape(email_data['date'])}</p>
             </div>
             <div class="content">
-                {html.escape(email_data['content']).replace(chr(10), '<br>')}
+                {self.render_content_to_html(email_data.get('content', ''), email_data.get('content_type') or 'text/plain')}
             </div>
         </article>"""
 
@@ -327,7 +441,7 @@ class EmailBlogServer:
                 <p><strong>Date:</strong> {html.escape(email_data['date'])}</p>
             </div>
             <div class="content">
-                {html.escape(email_data['content']).replace(chr(10), '<br>')}
+                {self.render_content_to_html(email_data.get('content', ''), email_data.get('content_type') or 'text/plain')}
             </div>
             <p><a href="/">← Back to all emails</a></p>
         </article>"""
@@ -345,10 +459,10 @@ class EmailBlogServer:
                 if dt is None:
                     raise ValueError("parsedate_to_datetime returned None")
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
+                    dt = dt.replace(tzinfo=timezone.utc)
                 pub_ts = float(dt.timestamp())
             except Exception:
-                pub_ts = float(datetime.now(tz=UTC).timestamp())
+                pub_ts = float(datetime.now(tz=timezone.utc).timestamp())
 
             item = f"""
             <item>
