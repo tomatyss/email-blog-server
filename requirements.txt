@@ -1,5 +1,5 @@
 aiohttp==3.12.15
 aioimaplib==2.0.1
 python-dotenv==1.1.1
-Markdown==3.6
+Markdown==3.8.2
 bleach==6.1.0
