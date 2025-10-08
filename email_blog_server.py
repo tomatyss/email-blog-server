@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import email
 import html
 import logging
@@ -44,12 +45,14 @@ class EmailBlogServer:
         imap_server,
         email_addr,
         password,
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=8080,
         blog_title=None,
         public_url=None,
         enable_imap: bool = True,
         render_mode: str = "plain",  # 'plain' | 'markdown' | 'auto'
+        auth_username: str | None = None,
+        auth_password: str | None = None,
     ):
         self.imap_server = imap_server
         self.email_addr = email_addr
@@ -67,6 +70,8 @@ class EmailBlogServer:
         self.app.router.add_get("/feed.xml", self.handle_rss)
         self.blog_title = blog_title or "Live Email Blog"
         self.template_path = Path(__file__).parent / "templates" / "blog_template.html"
+        self.auth_username = auth_username
+        self.auth_password = auth_password
         self.setup_signal_handlers()
 
     def setup_signal_handlers(self):
@@ -114,7 +119,7 @@ class EmailBlogServer:
             # Create SSL context with secure defaults
             ssl_context = ssl.create_default_context()
 
-            logger.info(f"Creating IMAP client for {self.imap_server}")
+            logger.info("Creating IMAP client")
             self.imap_client = aioimaplib.IMAP4_SSL(host=self.imap_server, ssl_context=ssl_context)
 
             logger.info("Waiting for server hello...")
@@ -320,12 +325,43 @@ class EmailBlogServer:
             }
         return None
 
+    def _auth_is_enabled(self) -> bool:
+        return bool(self.auth_username and self.auth_password)
+
+    def _require_auth(self, request):
+        if not self._auth_is_enabled():
+            return
+
+        if request is None:
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Email Blog"'})
+
+        headers = getattr(request, "headers", None)
+        if headers is None:
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Email Blog"'})
+
+        auth_header = headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Basic "):
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Email Blog"'})
+
+        encoded = auth_header.split(" ", 1)[1]
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except Exception:
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Email Blog"'})
+
+        if ":" not in decoded:
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Email Blog"'})
+
+        username, password = decoded.split(":", 1)
+        if username != self.auth_username or password != self.auth_password:
+            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": 'Basic realm="Email Blog"'})
+
     async def monitor_inbox(self):
         """Monitor inbox for new emails"""
         while True:
             try:
                 # Create or re-create connection
-                logger.info(f"Connecting to {self.imap_server} as {self.email_addr}")
+                logger.info("Connecting to IMAP server")
                 ok = await self.connect_imap()
                 if not ok:
                     await asyncio.sleep(10)
@@ -381,7 +417,7 @@ class EmailBlogServer:
                                     if email_data:
                                         emails_cache.appendleft(email_data)
                                         processed_uids.add(seq_id)
-                                        logger.info(f"New email fetched: {email_data['subject']}")
+                                        logger.info("New email fetched")
 
                             await self.imap_client.idle_start()
 
@@ -403,9 +439,10 @@ class EmailBlogServer:
         else:
             # Display all emails with links
             for email_data in emails_cache:
+                uid_html = html.escape(str(email_data["uid"]))
                 email_content += f"""
         <article>
-            <h2><a href="/email/{email_data['uid']}">{html.escape(email_data['subject'])}</a></h2>
+            <h2><a href="/email/{uid_html}">{html.escape(email_data['subject'])}</a></h2>
             <div class="meta">
                 <p><strong>From:</strong> {html.escape(email_data['from'])}</p>
                 <p><strong>Date:</strong> {html.escape(email_data['date'])}</p>
@@ -449,10 +486,12 @@ class EmailBlogServer:
     def generate_rss(self):
         """Generate RSS feed content"""
         items = []
-        base_url = (
+        raw_base_url = (
             self.public_url.rstrip("/") if self.public_url else f"http://{self.host}:{self.port}"
         )
+        base_url = html.escape(raw_base_url)
         for email_data in emails_cache:
+            uid_html = html.escape(str(email_data["uid"]))
             # Parse date robustly
             try:
                 dt = parsedate_to_datetime(email_data["date"])
@@ -467,8 +506,8 @@ class EmailBlogServer:
             item = f"""
             <item>
                 <title>{html.escape(email_data['subject'])}</title>
-                <link>{base_url}/email/{email_data['uid']}</link>
-                <guid>{base_url}/email/{email_data['uid']}</guid>
+                <link>{base_url}/email/{uid_html}</link>
+                <guid>{base_url}/email/{uid_html}</guid>
                 <description>{html.escape(email_data['content'])}</description>
                 <author>{html.escape(email_data['from'])}</author>
                 <pubDate>{formatdate(pub_ts)}</pubDate>
@@ -490,6 +529,7 @@ class EmailBlogServer:
 
     async def handle_blog(self, request):
         """Handle blog page requests"""
+        self._require_auth(request)
         return web.Response(
             text=self.generate_html(),
             content_type="text/html",
@@ -497,11 +537,15 @@ class EmailBlogServer:
                 "X-Content-Type-Options": "nosniff",
                 "X-Frame-Options": "DENY",
                 "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';",
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
             },
         )
 
     async def handle_single_email(self, request):
         """Handle single email view requests"""
+        self._require_auth(request)
         uid = request.match_info["uid"]
         email_data = next((email for email in emails_cache if str(email["uid"]) == str(uid)), None)
 
@@ -515,16 +559,23 @@ class EmailBlogServer:
                 "X-Content-Type-Options": "nosniff",
                 "X-Frame-Options": "DENY",
                 "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'self';",
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
             },
         )
 
     async def handle_rss(self, request):
         """Handle RSS feed requests"""
+        self._require_auth(request)
         return web.Response(
             text=self.generate_rss(),
             content_type="application/rss+xml",
             headers={
                 "X-Content-Type-Options": "nosniff",
+                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+                "Referrer-Policy": "no-referrer",
+                "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
             },
         )
 

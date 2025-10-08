@@ -34,10 +34,14 @@ pip install -r requirements.txt
 
      # Optional settings
      PORT=8080
-     HOST=0.0.0.0
+     HOST=127.0.0.1
      # Base URL used in RSS feed links (useful behind reverse proxies)
      # Example: https://blog.example.com
      PUBLIC_URL=
+     
+     # Optional: Protect the blog with HTTP Basic authentication
+     BASIC_AUTH_USERNAME=
+     BASIC_AUTH_PASSWORD=
      
      # Optional: Content rendering mode (defaults to plain)
      # Options: plain | markdown | auto
@@ -47,7 +51,7 @@ pip install -r requirements.txt
      RENDER_MODE=plain
      ```
 
-3. Run the server:
+3. Run the server (binds to localhost by default):
 ```bash
 python blog_server.py
 ```
@@ -68,9 +72,12 @@ If using Gmail:
 ## Security Features
 
 - SSL/TLS encryption for email fetching
+- Localhost bind by default; opt-in if you need to expose it externally
+- Optional HTTP Basic authentication for the web UI
 - Content Security Policy (CSP) headers
 - X-Frame-Options to prevent clickjacking
 - X-Content-Type-Options to prevent MIME-type sniffing
+- Strict-Transport-Security, Referrer-Policy, and Permissions-Policy headers
 - By default all content is HTML-escaped to prevent XSS attacks
 - When Markdown/HTML is enabled, content is sanitized (using bleach if installed)
 - No JavaScript used - pure server-side rendering

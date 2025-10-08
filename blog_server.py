@@ -17,11 +17,13 @@ async def main():
     imap_server = os.getenv("IMAP_SERVER")
     email_addr = os.getenv("EMAIL")
     password = os.getenv("PASSWORD")
-    host = os.getenv("HOST", "0.0.0.0")
+    host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8080"))
     blog_title = os.getenv("BLOG_TITLE")
     public_url = os.getenv("PUBLIC_URL")
     render_mode = os.getenv("RENDER_MODE", "plain")
+    auth_username = os.getenv("BASIC_AUTH_USERNAME")
+    auth_password = os.getenv("BASIC_AUTH_PASSWORD")
 
     if not all([imap_server, email_addr, password]):
         logger.error("Please set IMAP_SERVER, EMAIL, and PASSWORD in your .env file")
@@ -37,6 +39,8 @@ async def main():
         blog_title,
         public_url=public_url,
         render_mode=render_mode,
+        auth_username=auth_username,
+        auth_password=auth_password,
     )
     await server.start()
 
