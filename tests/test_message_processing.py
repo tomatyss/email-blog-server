@@ -119,6 +119,71 @@ class MessageProcessingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(await server.fetch_email("124"))
 
+    async def test_sender_allowlist_ignores_display_name(self):
+        msg = EmailMessage()
+        msg["From"] = '"allowed@example.com" <attacker@example.net>'
+        msg["Subject"] = "Spoof"
+        msg.set_content("hello")
+        raw = msg.as_bytes()
+
+        server = EmailBlogServer(
+            imap_server="imap.example.com",
+            email_addr="user@example.com",
+            password="secret",
+            host="127.0.0.1",
+            enable_imap=False,
+            allowed_senders=["allowed@example.com"],
+        )
+        server.imap_client = FakeImapClient(
+            {
+                ("FETCH", "125", "(RFC822.SIZE)"): (
+                    "OK",
+                    [f"1 (UID 125 RFC822.SIZE {len(raw)})".encode()],
+                ),
+                ("FETCH", "125", "(BODY.PEEK[])"): (
+                    "OK",
+                    [b"1 (UID 125 BODY[]", raw, b")"],
+                ),
+            }
+        )
+
+        self.assertIsNone(await server.fetch_email("125"))
+
+    async def test_startup_marks_older_uids_processed(self):
+        server = EmailBlogServer(
+            imap_server="imap.example.com",
+            email_addr="user@example.com",
+            password="secret",
+            host="127.0.0.1",
+            enable_imap=False,
+        )
+        server.imap_client = FakeImapClient(
+            {
+                ("SEARCH", "ALL"): ("OK", [b" ".join(str(uid).encode() for uid in range(1, 106))]),
+            }
+        )
+        fetched = []
+
+        async def fake_fetch_email(uid):
+            fetched.append(uid)
+            return {
+                "subject": f"Post {uid}",
+                "from": "User",
+                "date": "Mon, 01 Jan 2024 12:34:56 +0000",
+                "content": "Body",
+                "content_type": "text/plain",
+                "uid": uid,
+            }
+
+        server.fetch_email = fake_fetch_email
+
+        await server._fetch_new_uids(limit_to_recent=True)
+        await server._fetch_new_uids()
+
+        self.assertEqual(fetched, [str(uid) for uid in range(6, 106)])
+        self.assertEqual(server.processed_uids, {str(uid) for uid in range(1, 106)})
+        self.assertEqual(len(server.emails_cache), 100)
+
 
 class FakeImapClient:
     def __init__(self, responses):

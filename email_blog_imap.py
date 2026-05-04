@@ -101,7 +101,11 @@ class EmailBlogImapMixin:
         uids = parse_id_list(data) if status == "OK" else []
         logger.info("Found %s message UIDs", len(uids))
 
-        for uid in uids[-100:] if limit_to_recent else uids:
+        uids_to_fetch = uids[-100:] if limit_to_recent else uids
+        if limit_to_recent:
+            self.processed_uids.update(set(uids) - set(uids_to_fetch))
+
+        for uid in uids_to_fetch:
             if uid in self.processed_uids:
                 continue
             email_data = await self.fetch_email(uid)

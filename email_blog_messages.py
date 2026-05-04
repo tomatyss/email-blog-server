@@ -38,8 +38,7 @@ def sender_allowed(from_header: str, allowed_senders: Iterable[str] | None) -> b
         return True
 
     addresses = {addr.lower() for _, addr in getaddresses([from_header]) if addr}
-    names = {name.lower() for name, _ in getaddresses([from_header]) if name}
-    return bool((addresses | names) & allowed)
+    return bool(addresses & allowed)
 
 
 def extract_email_content(
