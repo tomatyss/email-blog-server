@@ -1,4 +1,4 @@
-aiohttp==3.13.4
+aiohttp==3.13.5
 aioimaplib==2.0.1
 python-dotenv==1.2.2
 Markdown==3.10.2
