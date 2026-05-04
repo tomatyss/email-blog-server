@@ -1,13 +1,9 @@
 import unittest
 
-from email_blog_server import EmailBlogServer, emails_cache, processed_uids
+from email_blog_server import EmailBlogServer
 
 
 class RenderModeTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        emails_cache.clear()
-        processed_uids.clear()
-
     async def test_auto_prefers_html_and_blocks_script(self):
         server = EmailBlogServer(
             imap_server="imap.example.com",
@@ -21,7 +17,7 @@ class RenderModeTests(unittest.IsolatedAsyncioTestCase):
             render_mode="auto",
         )
 
-        emails_cache.appendleft(
+        server.emails_cache.appendleft(
             {
                 "subject": "HTML Email",
                 "from": "User",
@@ -52,7 +48,7 @@ class RenderModeTests(unittest.IsolatedAsyncioTestCase):
             render_mode="markdown",
         )
 
-        emails_cache.appendleft(
+        server.emails_cache.appendleft(
             {
                 "subject": "MD Email",
                 "from": "User",
@@ -79,7 +75,7 @@ class RenderModeTests(unittest.IsolatedAsyncioTestCase):
             enable_imap=False,
         )
         # Old entries without content_type should still render safely
-        emails_cache.appendleft(
+        server.emails_cache.appendleft(
             {
                 "subject": "Plain Email",
                 "from": "User",
@@ -95,4 +91,3 @@ class RenderModeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

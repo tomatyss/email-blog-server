@@ -11,13 +11,15 @@ A secure server that turns your email inbox into a live blog. New emails automat
 - Content Security Policy implementation
 - Memory-efficient (stores last 100 emails)
 - Health check endpoint at /health
- - Optional Markdown/HTML rendering (opt-in via env var)
+- Optional Markdown/HTML rendering (opt-in via env var)
+- Stable IMAP UID-based post links
+- Optional token authentication, mailbox selection, and sender allowlisting
 
 ## Installation
 
 1. Install Python dependencies:
 ```bash
-pip install -r requirements.txt
+make install
 ```
 
 2. Configure environment variables:
@@ -34,7 +36,7 @@ pip install -r requirements.txt
 
      # Optional settings
      PORT=8080
-     HOST=0.0.0.0
+     HOST=127.0.0.1
      # Base URL used in RSS feed links (useful behind reverse proxies)
      # Example: https://blog.example.com
      PUBLIC_URL=
@@ -45,14 +47,34 @@ pip install -r requirements.txt
      # - markdown: convert plain/markdown to HTML; sanitize; sanitize HTML parts
      # - auto: prefer sanitized text/html part; else markdown->HTML; else plain
      RENDER_MODE=plain
+
+     # Optional: publish from a dedicated mailbox and/or trusted senders only
+     IMAP_MAILBOX=INBOX
+     ALLOWED_SENDERS=
+
+     # Optional: require a token on blog, post, and RSS routes
+     BLOG_ACCESS_TOKEN=
+
+     # Required to bind to 0.0.0.0, ::, or a non-loopback address
+     ALLOW_PUBLIC_BIND=false
+     # Only set true when a trusted reverse proxy or VPN already protects access
+     ALLOW_PUBLIC_WITHOUT_AUTH=false
+
+     # Optional: inbound email size limits
+     MAX_EMAIL_BYTES=1048576
+     MAX_BODY_CHARS=100000
      ```
 
 3. Run the server:
 ```bash
-python blog_server.py
+make run
 ```
 
 4. Visit `http://localhost:8080` in your browser to view your email blog
+
+By default the server binds only to `127.0.0.1`. To expose it publicly, set
+`ALLOW_PUBLIC_BIND=true` and configure `BLOG_ACCESS_TOKEN`, or keep the server behind a trusted
+reverse proxy/VPN and explicitly set `ALLOW_PUBLIC_WITHOUT_AUTH=true`.
 
 ## Gmail Setup
 
@@ -68,22 +90,31 @@ If using Gmail:
 ## Security Features
 
 - SSL/TLS encryption for email fetching
+- Loopback-only default binding
+- Optional token authentication for blog, post, and RSS routes
+- Optional dedicated mailbox and sender allowlist
+- Stable IMAP UID-based links instead of shifting sequence numbers
+- Message and body size limits to reduce memory abuse
+- Attachments are skipped during body extraction
 - Content Security Policy (CSP) headers
 - X-Frame-Options to prevent clickjacking
 - X-Content-Type-Options to prevent MIME-type sniffing
 - By default all content is HTML-escaped to prevent XSS attacks
 - When Markdown/HTML is enabled, content is sanitized (using bleach if installed)
+- RSS is generated with XML APIs instead of manual string interpolation
 - No JavaScript used - pure server-side rendering
 - Memory-based caching (no file system access)
 
 ## How It Works
 
-1. The server connects to your email inbox using IMAP over SSL
+1. The server connects to your configured mailbox using IMAP over SSL
 2. It uses IMAP IDLE for real-time email notifications
-3. When new emails arrive, they're automatically fetched and cached
-4. The blog page shows the most recent 100 emails
-5. All email content is properly encoded (and sanitized when rendering HTML)
-6. The page auto-updates when you refresh
+3. It searches and fetches messages by stable IMAP UID
+4. Oversized messages and attachments are skipped before rendering
+5. When new emails arrive, they're automatically fetched and cached
+6. The blog page shows the most recent 100 emails
+7. All email content is properly encoded (and sanitized when rendering HTML)
+8. The page auto-updates when you refresh
 
 ## Health Check
 
@@ -91,9 +122,9 @@ The server provides a health check endpoint at `/health` that returns "OK" when 
 ## Development
 
 - Run locally:
-  - `python blog_server.py`
+  - `make run`
 - Tests (unit tests focus on rendering and RSS; IMAP is disabled during tests):
-  - `python -m unittest discover -s tests -p 'test_*.py'`
+  - `make test`
 
 - Dev tooling:
   - Install: `make install-dev`

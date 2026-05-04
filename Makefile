@@ -1,5 +1,11 @@
 .PHONY: help install install-dev run test lint lint-fix format format-check
 
+VENV ?= .venv
+PYTHON ?= $(VENV)/bin/python
+PIP ?= $(PYTHON) -m pip
+RUFF ?= $(VENV)/bin/ruff
+BLACK ?= $(VENV)/bin/black
+
 help:
 	@echo "Available targets:"
 	@echo "  install        - pip install -r requirements.txt"
@@ -11,27 +17,29 @@ help:
 	@echo "  format         - run black formatter"
 	@echo "  format-check   - check formatting with black"
 
-install:
-	pip install -r requirements.txt
+$(PYTHON):
+	python3 -m venv $(VENV)
+
+install: $(PYTHON)
+	$(PIP) install -r requirements.txt
 
 install-dev: install
-	pip install -r requirements-dev.txt
+	$(PIP) install -r requirements-dev.txt
 
 run:
-	python blog_server.py
+	$(PYTHON) blog_server.py
 
 test:
-	python -m unittest discover -s tests -p 'test_*.py'
+	$(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 
 lint:
-	ruff check .
+	$(RUFF) check .
 
 lint-fix:
-	ruff check --fix .
+	$(RUFF) check --fix .
 
 format:
-	black .
+	$(BLACK) .
 
 format-check:
-	black --check .
-
+	$(BLACK) --check .
