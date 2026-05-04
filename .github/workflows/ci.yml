@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt pip-audit
+      - name: Run tests
+        run: make test
+      - name: Run Ruff
+        run: make lint
+      - name: Check formatting
+        run: make format-check
+      - name: Audit dependencies
+        run: .venv/bin/pip-audit -r requirements.txt

@@ -7,7 +7,8 @@
 
 ## Project Structure
 - `blog_server.py`: small executable entry point that loads `.env` and starts `EmailBlogServer`.
-- `email_blog_server.py`: reusable server, IMAP ingestion, rendering, RSS, cache, and request-handler logic.
+- `email_blog_server.py`: reusable HTTP server and request-handler orchestration.
+- `email_blog_imap.py`, `email_blog_messages.py`, `email_blog_rendering.py`, `email_blog_feed.py`, `email_blog_html.py`, `email_blog_config.py`: focused helpers for IMAP ingestion, MIME parsing, rendering, RSS, HTML generation, and exposure/auth validation.
 - `templates/blog_template.html`: server-rendered HTML skeleton used by `generate_html`.
 - `tests/`: unittest coverage for runtime modules; async request handlers use `unittest.IsolatedAsyncioTestCase`.
 - `.env.example`: documented configuration contract. Update it whenever adding, renaming, or changing an environment variable.
@@ -30,11 +31,11 @@ make format-check   # black --check .
 Focused validation is preferred while iterating:
 
 ```bash
-python -m unittest tests.test_server
-python -m unittest tests.test_render_mode
-python -m unittest tests.test_server.EmailBlogServerTests.test_health
-ruff check path/to/file.py
-black --check path/to/file.py
+.venv/bin/python -m unittest tests.test_server
+.venv/bin/python -m unittest tests.test_render_mode
+.venv/bin/python -m unittest tests.test_server.EmailBlogServerTests.test_health
+.venv/bin/ruff check path/to/file.py
+.venv/bin/black --check path/to/file.py
 ```
 
 Run `make test` before finishing code changes. Run `make lint` and `make format-check` when Python files changed; use `make format` only when formatting is needed.
@@ -63,7 +64,7 @@ Run `make test` before finishing code changes. Run `make lint` and `make format-
 
 ## Testing Guidelines
 - Add or update tests for every feature or bug fix, including at least one positive case and one failure, escaping, or sanitization case when user-controlled content is involved.
-- Reset shared state in `setUp` with `emails_cache.clear()` and `processed_uids.clear()`.
+- Keep cache state instance-owned in tests by using `server.emails_cache` and `server.processed_uids`.
 - Keep tests deterministic: avoid wall-clock assertions unless values are controlled, avoid network access, and do not require real environment variables.
 - Prefer focused unittest targets while developing, then run the full suite with `make test`.
 - Rendering changes should verify the emitted HTML or RSS text for both intended output and blocked unsafe content.
