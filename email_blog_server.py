@@ -29,6 +29,7 @@ from email_blog_messages import (
 from email_blog_rendering import render_content_to_html
 
 logger = logging.getLogger(__name__)
+STRICT_TRANSPORT_SECURITY = "max-age=31536000; includeSubDomains"
 
 
 class EmailBlogServer(EmailBlogImapMixin):
@@ -133,7 +134,10 @@ class EmailBlogServer(EmailBlogImapMixin):
         return web.Response(
             text=self.generate_rss(),
             content_type="application/rss+xml",
-            headers={"X-Content-Type-Options": "nosniff"},
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Strict-Transport-Security": STRICT_TRANSPORT_SECURITY,
+            },
         )
 
     async def handle_health(self, request: web.Request | None) -> web.Response:
@@ -203,6 +207,7 @@ class EmailBlogServer(EmailBlogImapMixin):
                 "X-Content-Type-Options": "nosniff",
                 "X-Frame-Options": "DENY",
                 "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+                "Strict-Transport-Security": STRICT_TRANSPORT_SECURITY,
             },
         )
 

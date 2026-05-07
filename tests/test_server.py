@@ -30,6 +30,7 @@ class EmailBlogServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Test Blog", resp.text)
         self.assertIn("/feed.xml", resp.text)
         self.assertIn("Content-Security-Policy", resp.headers)
+        self.assertIn("Strict-Transport-Security", resp.headers)
 
     async def test_blog_with_email_and_escape(self):
         self.server.emails_cache.appendleft(
@@ -83,6 +84,7 @@ class EmailBlogServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<title>RSS Item</title>", xml)
         self.assertIn("http://example.com/email/10", xml)
         self.assertIn("<pubDate>", xml)
+        self.assertIn("Strict-Transport-Security", resp.headers)
         ElementTree.fromstring(xml.split("\n", 1)[1])
 
     async def test_rss_escapes_channel_fields(self):
