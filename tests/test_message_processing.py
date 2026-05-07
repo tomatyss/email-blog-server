@@ -1,7 +1,7 @@
 import unittest
 from email.message import EmailMessage
 
-from email_blog_messages import extract_email_content
+from email_blog_messages import extract_email_content, extract_fetch_message_bytes
 from email_blog_server import EmailBlogServer
 
 
@@ -32,6 +32,12 @@ class MessageProcessingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(content_type, "text/plain")
         self.assertEqual(content, "public body\n")
+
+    async def test_fetch_response_extracts_bytearray_payload(self):
+        raw = b"Subject: Bytearray\r\n\r\nbody"
+        data = [b"1 FETCH (UID 1 BODY[] {25}", bytearray(raw), b")"]
+
+        self.assertEqual(extract_fetch_message_bytes(data), raw)
 
     async def test_fetch_email_uses_uid_fetch_and_size_limit(self):
         server = EmailBlogServer(
@@ -184,6 +190,26 @@ class MessageProcessingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server.processed_uids, {str(uid) for uid in range(1, 106)})
         self.assertEqual(len(server.emails_cache), 100)
 
+    async def test_search_uids_uses_protocol_uid_search_when_available(self):
+        server = EmailBlogServer(
+            imap_server="imap.example.com",
+            email_addr="user@example.com",
+            password="secret",
+            host="127.0.0.1",
+            enable_imap=False,
+        )
+        server.imap_client = FakeImapClient({})
+        server.imap_client.protocol = FakeImapProtocol()
+
+        status, data = await server._search_uids()
+
+        self.assertEqual(status, "OK")
+        self.assertEqual(data, [b"10 11"])
+        self.assertEqual(
+            server.imap_client.protocol.calls,
+            [("ALL", None, True)],
+        )
+
 
 class FakeImapClient:
     def __init__(self, responses):
@@ -194,6 +220,15 @@ class FakeImapClient:
         call = (command, uid, parts) if parts else (command, uid)
         self.calls.append(call)
         return self.responses[call]
+
+
+class FakeImapProtocol:
+    def __init__(self):
+        self.calls = []
+
+    async def search(self, *criteria, charset="utf-8", by_uid=False):
+        self.calls.append((*criteria, charset, by_uid))
+        return "OK", [b"10 11"]
 
 
 if __name__ == "__main__":

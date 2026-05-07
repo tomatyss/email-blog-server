@@ -124,7 +124,11 @@ def parse_uid_validity(data: object) -> str | None:
 
 def extract_fetch_message_bytes(data: object) -> bytes | None:
     """Extract raw message bytes from common aioimaplib FETCH response shapes."""
-    candidates = [item for item in _flatten_response_items(data) if isinstance(item, bytes)]
+    candidates = [
+        bytes(item)
+        for item in _flatten_response_items(data)
+        if isinstance(item, (bytes, bytearray))
+    ]
     message_candidates = [
         item
         for item in candidates

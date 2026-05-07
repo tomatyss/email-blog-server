@@ -66,7 +66,7 @@ class EmailBlogImapMixin:
 
         msg_bytes = extract_fetch_message_bytes(data)
         if not msg_bytes:
-            logger.error("Unexpected FETCH response format for UID %s: %s", uid, data)
+            logger.error("Unexpected FETCH response format for UID %s", uid)
             return None
         if len(msg_bytes) > self.max_email_bytes:
             logger.warning("Skipping UID %s because payload exceeds limit", uid)
@@ -97,7 +97,7 @@ class EmailBlogImapMixin:
                 await asyncio.sleep(30)
 
     async def _fetch_new_uids(self, limit_to_recent: bool = False) -> None:
-        status, data = await self.imap_client.uid("SEARCH", "ALL")
+        status, data = await self._search_uids()
         uids = parse_id_list(data) if status == "OK" else []
         logger.info("Found %s message UIDs", len(uids))
 
@@ -112,6 +112,14 @@ class EmailBlogImapMixin:
             self.processed_uids.add(uid)
             if email_data:
                 self._append_email(email_data)
+
+    async def _search_uids(self):
+        """Search mailbox by stable IMAP UID."""
+        protocol = getattr(self.imap_client, "protocol", None)
+        protocol_search = getattr(protocol, "search", None)
+        if protocol_search:
+            return await protocol_search("ALL", charset=None, by_uid=True)
+        return await self.imap_client.uid("SEARCH", "ALL")
 
     async def _idle_until_new_message(self) -> None:
         await self.imap_client.idle_start()
